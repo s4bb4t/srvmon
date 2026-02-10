@@ -45,14 +45,20 @@ type (
 		log *zap.Logger
 		pb.UnimplementedSrvmonServer
 	}
+
+	Config struct {
+		Version     string `json:"version" yaml:"version" mapstructure:"version"`
+		GRPCAddress string `json:"grpc_address" yaml:"grpc_address" mapstructure:"grpc_address"`
+		HTTPAddress string `json:"http_address" yaml:"http_address" mapstructure:"http_address"`
+	}
 )
 
-func New(version, grpcAddress, httpAddress string, log *zap.Logger, dependencies ...Checker) *SrvMon {
+func New(cfg Config, log *zap.Logger, dependencies ...Checker) *SrvMon {
 	return &SrvMon{
 		dependencies: dependencies,
-		version:      version,
-		grpcAddr:     grpcAddress,
-		httpAddr:     httpAddress,
+		version:      cfg.Version,
+		grpcAddr:     cfg.GRPCAddress,
+		httpAddr:     cfg.HTTPAddress,
 		log:          log,
 	}
 }
