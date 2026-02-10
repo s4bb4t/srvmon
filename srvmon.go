@@ -106,7 +106,7 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(resp.String()))
+		w.Write([]byte(resp.Status.String() + "\n: " + resp.String()))
 	}
 
 	readyHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -134,7 +134,7 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 		IdleTimeout:       10 * time.Second,
 	}
 
-	m.log.Info("starting srvmon rest", zap.String("address", m.grpcAddr))
+	m.log.Info("starting srvmon rest", zap.String("address", m.httpAddr))
 
 	go func() {
 
