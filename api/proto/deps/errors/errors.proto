@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package web3gate.errors;
+
+enum Errors {
+  UNDEFINED_ERROR = 0;
+  NOT_FOUND = 30;
+  ALREADY_EXIST = 31  ;
+  VALIDATION_ERROR = 32;
+  REACHED_LIMIT = 33;
+  PERMISSION_DENIED = 34;
+}
