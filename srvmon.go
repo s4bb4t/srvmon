@@ -58,14 +58,24 @@ type (
 )
 
 func New(cfg Config, log *zap.Logger, dependencies ...Checker) *SrvMon {
-	return &SrvMon{
-		dependencies: dependencies,
-		version:      cfg.Version,
-		grpcAddr:     cfg.GRPCAddress,
-		httpAddr:     cfg.HTTPAddress,
-		log:          log,
-		ready:        make(chan struct{}),
+	m := &SrvMon{
+		version:  cfg.Version,
+		grpcAddr: cfg.GRPCAddress,
+		httpAddr: cfg.HTTPAddress,
+		log:      log,
+		ready:    make(chan struct{}),
 	}
+
+	if dependencies != nil {
+		m.dependencies = dependencies
+	}
+
+	return m
+}
+
+func (s *SrvMon) AddDependencies(dependency ...Checker) *SrvMon {
+	s.dependencies = append(s.dependencies, dependency...)
+	return s
 }
 
 func (s *SrvMon) SetReady() {
