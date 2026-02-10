@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const maxConcurrent = 10
@@ -105,8 +106,14 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 			w.Write([]byte(err.Error()))
 		}
 
+		json, err := protojson.Marshal(resp)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+		}
+
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(resp.Status.String() + "\n: " + resp.String()))
+		w.Write(json)
 	}
 
 	readyHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -116,8 +123,14 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 			w.Write([]byte(err.Error()))
 		}
 
+		json, err := protojson.Marshal(resp)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+		}
+
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(resp.String()))
+		w.Write(json)
 	}
 
 	router.HandleFunc("/health", healthHandler)
