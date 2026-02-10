@@ -1,0 +1,270 @@
+openapi: 3.0.3
+info:
+  title: srvmon Health API
+  description: |
+    Production-grade service health monitoring API.
+
+    This API provides endpoints for checking service health and readiness
+    following Kubernetes and cloud-native best practices.
+
+    Corresponds to proto package `srvmon.v1`.
+  version: v1
+  contact:
+    name: srvmon
+    url: https://github.com/s4bb4t/srvmon
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: /
+    description: API
+  - url: localhost:8080/
+    description: local api
+
+tags:
+  - name: srvmon
+    description: Health monitoring service (maps to srvmon.v1.srvmon gRPC service)
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: |
+        Returns the overall health status of the service.
+
+        Maps to `rpc Health(HealthRequest) returns (HealthResponse)`.
+      operationId: health
+      tags:
+        - srvmon
+      responses:
+        '200':
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: Healthy service
+                  value:
+                    status: STATUS_UP
+                    version: "1.0.0"
+                    checks:
+                      - name: database
+                        status: STATUS_UP
+                        message: "database is healthy"
+                        timestamp: "2024-01-15T10:30:00Z"
+                    timestamp: "2024-01-15T10:30:00Z"
+                unhealthy:
+                  summary: Unhealthy service
+                  value:
+                    status: STATUS_DOWN
+                    version: "1.0.0"
+                    checks:
+                      - name: database
+                        status: STATUS_DOWN
+                        message: "connection failed"
+                        error: "connection refused"
+                        timestamp: "2024-01-15T10:30:00Z"
+                    timestamp: "2024-01-15T10:30:00Z"
+        '503':
+          description: Service unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /healthz:
+    get:
+      summary: Health check (Kubernetes-style)
+      description: |
+        Kubernetes-style alias for `/health`.
+
+        Maps to `rpc Health(HealthRequest) returns (HealthResponse)`.
+      operationId: healthz
+      tags:
+        - srvmon
+      responses:
+        '200':
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /ready:
+    get:
+      summary: Readiness check
+      description: |
+        Returns whether the service is ready to accept traffic.
+
+        Maps to `rpc Ready(ReadinessRequest) returns (ReadinessResponse)`.
+      operationId: ready
+      tags:
+        - srvmon
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+              examples:
+                ready:
+                  summary: Service ready
+                  value:
+                    ready: true
+                    checks: []
+                    timestamp: "2024-01-15T10:30:00Z"
+        '503':
+          description: Service not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+              examples:
+                not_ready:
+                  summary: Service not ready
+                  value:
+                    ready: false
+                    reason: "database: connection not established"
+                    checks:
+                      - name: database
+                        status: STATUS_DOWN
+                        message: "connection not established"
+                        timestamp: "2024-01-15T10:30:00Z"
+                    timestamp: "2024-01-15T10:30:00Z"
+
+  /readyz:
+    get:
+      summary: Readiness check (Kubernetes-style)
+      description: |
+        Kubernetes-style alias for `/ready`.
+
+        Maps to `rpc Ready(ReadinessRequest) returns (ReadinessResponse)`.
+      operationId: readyz
+      tags:
+        - srvmon
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Service not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+
+components:
+  schemas:
+    Status:
+      type: string
+      description: |
+        Health status of a component.
+
+        Maps to `enum Status` in proto.
+      enum:
+        - STATUS_UNSPECIFIED
+        - STATUS_UP
+        - STATUS_DOWN
+        - STATUS_DEGRADED
+        - STATUS_UNKNOWN
+      example: STATUS_UP
+
+    CheckResult:
+      type: object
+      description: |
+        Outcome of a single health check.
+
+        Maps to `message CheckResult` in proto.
+      properties:
+        name:
+          type: string
+          description: Identifies the checker that produced this result
+          example: database
+        status:
+          $ref: '#/components/schemas/Status'
+        message:
+          type: string
+          description: Additional context about the check result
+          example: "database is healthy"
+        timestamp:
+          type: string
+          format: date-time
+          description: When the check was performed
+          example: "2024-01-15T10:30:00Z"
+        error:
+          type: string
+          description: Error message if the check failed
+          example: "connection refused"
+      required:
+        - name
+        - status
+        - timestamp
+
+    HealthResponse:
+      type: object
+      description: |
+        Response from the Health RPC.
+
+        Maps to `message HealthResponse` in proto.
+      properties:
+        status:
+          $ref: '#/components/schemas/Status'
+        version:
+          type: string
+          description: Service version
+          example: "1.0.0"
+        checks:
+          type: array
+          description: Individual check results
+          items:
+            $ref: '#/components/schemas/CheckResult'
+        timestamp:
+          type: string
+          format: date-time
+          description: When the report was generated
+          example: "2024-01-15T10:30:00Z"
+      required:
+        - status
+        - timestamp
+
+    ReadinessResponse:
+      type: object
+      description: |
+        Response from the Ready RPC.
+
+        Maps to `message ReadinessResponse` in proto.
+      properties:
+        ready:
+          type: boolean
+          description: Whether the service can handle requests
+          example: true
+        reason:
+          type: string
+          description: Why the service is not ready
+          example: "database: connection not established"
+        checks:
+          type: array
+          description: Individual readiness check results
+          items:
+            $ref: '#/components/schemas/CheckResult'
+        timestamp:
+          type: string
+          format: date-time
+          description: When the report was generated
+          example: "2024-01-15T10:30:00Z"
+      required:
+        - ready
+        - timestamp

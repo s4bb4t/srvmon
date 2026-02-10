@@ -1,0 +1,81 @@
+syntax = "proto3";
+
+package srvmon.v1;
+
+option go_package = "github.com/s4bb4t/srvmon/pkg/grpc/srvmon/v1";
+
+import "google/protobuf/timestamp.proto";
+
+// srvmon provides health check endpoints for monitoring.
+service srvmon {
+  // Health returns the overall health status of the service.
+  rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Readiness indicates if the service is ready to accept traffic.
+  rpc Ready(ReadinessRequest) returns (ReadinessResponse);
+}
+
+// Status represents the health status of a component.
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_UP = 1;
+  STATUS_DOWN = 2;
+  STATUS_DEGRADED = 3;
+  STATUS_UNKNOWN = 4;
+}
+
+// CheckResult represents the outcome of a single health check.
+message CheckResult {
+  // name identifies the checker that produced this result.
+  string name = 1;
+
+  // status indicates the health status.
+  Status status = 2;
+
+  // message provides additional context about the check result.
+  string message = 3;
+
+  // timestamp is when the check was performed.
+  google.protobuf.Timestamp timestamp = 4;
+
+  // error contains the error message if the check failed.
+  string error = 5;
+}
+
+// HealthRequest is the request for the Health RPC.
+message HealthRequest {
+}
+
+// HealthResponse is the response from the Health RPC.
+message HealthResponse {
+  // status is the overall health status.
+  Status status = 1;
+
+  // version is the service version.
+  string version = 2;
+
+  // checks contains individual check results.
+  repeated CheckResult checks = 3;
+
+  // timestamp is when the report was generated.
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+// ReadinessRequest is the request for the Readiness RPC.
+message ReadinessRequest {
+}
+
+// ReadinessResponse is the response from the Readiness RPC.
+message ReadinessResponse {
+  // ready indicates if the service can handle requests.
+  bool ready = 1;
+
+  // reason explains why the service is not ready.
+  string reason = 2;
+
+  // checks contains individual readiness check results.
+  repeated CheckResult checks = 3;
+
+  // timestamp is when the report was generated.
+  google.protobuf.Timestamp timestamp = 4;
+}
