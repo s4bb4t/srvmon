@@ -13,6 +13,7 @@ import (
 
 func (m *SrvMon) Health(ctx context.Context, _ *pb.HealthRequest) (*pb.HealthResponse, error) {
 	resp := &pb.HealthResponse{
+		Status:  pb.Status_STATUS_UP,
 		Version: m.version,
 	}
 
