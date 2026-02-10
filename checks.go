@@ -73,6 +73,26 @@ func (m *SrvMon) Ready(ctx context.Context, _ *pb.ReadinessRequest) (*pb.Readine
 		}
 	}
 
-	resp.Timestamp = timestamppb.New(time.Now())
-	return resp, nil
+	select {
+	case <-ctx.Done():
+		return &pb.ReadinessResponse{
+			Ready:     false,
+			Reason:    "srvmon is stopped",
+			Checks:    nil,
+			Timestamp: nil,
+		}, nil
+	case <-m.ready:
+		select {
+		case <-ctx.Done():
+			return &pb.ReadinessResponse{
+				Ready:     false,
+				Reason:    "srvmon is stopped",
+				Checks:    nil,
+				Timestamp: nil,
+			}, nil
+		default:
+			resp.Timestamp = timestamppb.New(time.Now())
+			return resp, nil
+		}
+	}
 }

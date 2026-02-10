@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -42,6 +43,9 @@ type (
 		grpcAddr     string
 		httpAddr     string
 
+		readyOnce sync.Once
+		ready     chan struct{}
+
 		log *zap.Logger
 		pb.UnimplementedSrvmonServer
 	}
@@ -60,7 +64,14 @@ func New(cfg Config, log *zap.Logger, dependencies ...Checker) *SrvMon {
 		grpcAddr:     cfg.GRPCAddress,
 		httpAddr:     cfg.HTTPAddress,
 		log:          log,
+		ready:        make(chan struct{}),
 	}
+}
+
+func (s *SrvMon) SetReady() {
+	s.readyOnce.Do(func() {
+		close(s.ready)
+	})
 }
 
 func (m *SrvMon) Run(ctx context.Context) {
