@@ -1,6 +1,6 @@
 # srvmon
 
-Production-grade service health monitoring package for Go with gRPC and REST/OpenAPI support.
+Production-grade service health monitoring package for Go with gRPC and REST support.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/s4bb4t/srvmon.svg)](https://pkg.go.dev/github.com/s4bb4t/srvmon)
 [![Go Report Card](https://goreportcard.com/badge/github.com/s4bb4t/srvmon)](https://goreportcard.com/report/github.com/s4bb4t/srvmon)
@@ -8,18 +8,13 @@ Production-grade service health monitoring package for Go with gRPC and REST/Ope
 
 ## Features
 
-- **Pluggable Health Checks**: Register custom checkers implementing the `Checker` interface
-- **Built-in Checkers**: TCP ping, HTTP, SQL database, Redis, memory usage
-- **Dual Protocol Support**: Both gRPC and REST/HTTP endpoints
-- **Kubernetes Ready**: `/healthz`, `/readyz`, `/livez` endpoints out of the box
-- **OpenAPI 3.0**: Full OpenAPI specification with Swagger UI support
-- **Concurrent Execution**: Parallel health check execution with configurable limits
-- **Result Caching**: Configurable TTL-based caching to reduce load
-- **Critical Dependencies**: Mark checkers as critical to fail fast on dependency issues
-- **Status Aggregation**: Intelligent status aggregation with multiple strategies
-- **Graceful Shutdown**: Clean shutdown with configurable timeout
-- **Observable**: Structured logging with zap, ready for Prometheus metrics
-- **Functional Options**: Clean, extensible configuration pattern
+- **Dual Protocol Support** — Both gRPC and REST/HTTP endpoints
+- **Kubernetes Ready** — `/healthz`, `/readyz` endpoints out of the box
+- **Pluggable Health Checks** — Register custom checkers implementing the `Checker` interface
+- **Critical Dependencies** — Mark checkers as critical to fail fast on dependency issues
+- **Status Aggregation** — Intelligent status aggregation (UP, DOWN, DEGRADED)
+- **Graceful Shutdown** — Clean shutdown with context cancellation
+- **Observable** — Structured logging with zap, OpenTelemetry instrumentation for gRPC
 
 ## Installation
 
@@ -34,36 +29,89 @@ package main
 
 import (
     "context"
-    "time"
+    "os"
+    "os/signal"
+    "syscall"
 
     "github.com/s4bb4t/srvmon"
-    "github.com/s4bb4t/srvmon/server"
     "go.uber.org/zap"
 )
 
 func main() {
     logger, _ := zap.NewProduction()
+    defer logger.Sync()
+
+    // Create configuration
+    cfg := srvmon.Config{
+        Version:     "1.0.0",
+        GRPCAddress: ":50051",
+        HTTPAddress: ":8080",
+    }
 
     // Create monitor
-    monitor, _ := srvmon.New(
-        srvmon.WithServiceName("my-service"),
-        srvmon.WithVersion("1.0.0"),
-        srvmon.WithLogger(logger),
-        srvmon.WithHTTPAddress(":8080"),
-        srvmon.WithGRPCAddress(":50051"),
+    monitor := srvmon.New(cfg, logger)
+
+    // Add health checkers
+    monitor.AddDependencies(
+        NewPingChecker("redis", "localhost:6379", 5*time.Second, true),    // critical
+        NewPingChecker("postgres", "localhost:5432", 5*time.Second, true), // critical
+        NewHTTPChecker("api", "https://api.example.com/health", false),    // non-critical
     )
 
-    // Register health checkers
-    monitor.Register(srvmon.NewPingChecker("redis", "localhost:6379", 5*time.Second))
-    monitor.RegisterCritical(srvmon.NewHTTPChecker("api", "http://api:8080/health", 10*time.Second))
+    // Setup graceful shutdown
+    ctx, cancel := context.WithCancel(context.Background())
+    sigCh := make(chan os.Signal, 1)
+    signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+    go func() {
+        <-sigCh
+        cancel()
+    }()
 
-    // Setup servers
-    monitor.SetHTTPServer(server.NewHTTPServer(monitor, ":8080"))
-    monitor.SetGRPCServer(server.NewGRPCServer(monitor, ":50051"))
+    // Mark service as ready after initialization
+    monitor.SetReady()
 
-    // Start
-    monitor.Start(context.Background())
+    // Run blocks until context is canceled
+    monitor.Run(ctx)
 }
+```
+
+## Core Concepts
+
+### The Checker Interface
+
+Every health check must implement the `Checker` interface:
+
+```go
+type Checker interface {
+    // MustOK returns true if this is a critical dependency.
+    // If a critical dependency fails, the service status becomes DOWN.
+    // If a non-critical dependency fails, the service status becomes DEGRADED.
+    MustOK(ctx context.Context) bool
+
+    // Check performs the health check and returns the result.
+    Check(ctx context.Context) (*pb.CheckResult, error)
+}
+```
+
+### Health Status Values
+
+| Status | Value | Description |
+|--------|-------|-------------|
+| `STATUS_UP` | 1 | Component is healthy |
+| `STATUS_DOWN` | 2 | Component is unhealthy |
+| `STATUS_DEGRADED` | 3 | Works with reduced capacity |
+| `STATUS_UNKNOWN` | 4 | Status cannot be determined |
+
+### Status Aggregation
+
+```
+Service starts with STATUS_UP
+
+For each registered checker:
+  ├─ If check returns STATUS_DOWN:
+  │   ├─ MustOK() == true  → Service = STATUS_DOWN
+  │   └─ MustOK() == false → Service = STATUS_DEGRADED
+  └─ Otherwise: no change
 ```
 
 ## API Endpoints
@@ -73,192 +121,472 @@ func main() {
 | Endpoint | Description |
 |----------|-------------|
 | `GET /health` | Full health report with all dependency checks |
-| `GET /ready` | Readiness probe for load balancer |
-| `GET /live` | Liveness probe for container orchestration |
-| `GET /healthz` | Kubernetes-style health endpoint |
-| `GET /readyz` | Kubernetes-style readiness endpoint |
-| `GET /livez` | Kubernetes-style liveness endpoint |
-| `GET /openapi.json` | OpenAPI 3.0 specification |
+| `GET /healthz` | Kubernetes-style health endpoint (alias for /health) |
+| `GET /ready` | Readiness probe |
+| `GET /readyz` | Kubernetes-style readiness endpoint (alias for /ready) |
 
-### gRPC
+### gRPC Service
 
 ```protobuf
-service HealthService {
+service srvmon {
+  // Health returns the overall health status of the service.
   rpc Health(HealthRequest) returns (HealthResponse);
-  rpc Readiness(ReadinessRequest) returns (ReadinessResponse);
-  rpc Liveness(LivenessRequest) returns (LivenessResponse);
-  rpc Check(CheckRequest) returns (CheckResponse);
-  rpc Watch(WatchRequest) returns (stream HealthResponse);
+
+  // Ready indicates if the service is ready to accept traffic.
+  rpc Ready(ReadinessRequest) returns (ReadinessResponse);
 }
 ```
 
-## Health Status Values
+## Example Checkers
 
-| Status | Description | HTTP Code |
-|--------|-------------|-----------|
-| `UP` | Component is healthy | 200 |
-| `DOWN` | Component is unhealthy | 503 |
-| `DEGRADED` | Component works with reduced capacity | 200 |
-| `UNKNOWN` | Status cannot be determined | 200 |
+### TCP Ping Checker
 
-## Built-in Checkers
-
-### PingChecker
-
-Checks TCP connectivity to a host:port.
+Check TCP connectivity to any host:port:
 
 ```go
-checker := srvmon.NewPingChecker("redis", "localhost:6379", 5*time.Second)
-monitor.Register(checker)
-```
+package checkers
 
-### HTTPChecker
+import (
+    "context"
+    "net"
+    "time"
 
-Checks HTTP endpoint health:
-
-```go
-checker := srvmon.NewHTTPChecker(
-    "api-gateway",
-    "http://gateway:8080/health",
-    10*time.Second,
-    srvmon.WithHTTPExpectCode(200),
-    srvmon.WithHTTPMethod("HEAD"),
+    pb "github.com/s4bb4t/srvmon/pkg/grpc/srvmon/v1"
+    "google.golang.org/protobuf/types/known/timestamppb"
 )
-monitor.Register(checker)
+
+type PingChecker struct {
+    name     string
+    addr     string
+    timeout  time.Duration
+    critical bool
+}
+
+func NewPingChecker(name, addr string, timeout time.Duration, critical bool) *PingChecker {
+    return &PingChecker{
+        name:     name,
+        addr:     addr,
+        timeout:  timeout,
+        critical: critical,
+    }
+}
+
+func (c *PingChecker) MustOK(_ context.Context) bool {
+    return c.critical
+}
+
+func (c *PingChecker) Check(ctx context.Context) (*pb.CheckResult, error) {
+    result := &pb.CheckResult{
+        Name:      c.name,
+        Timestamp: timestamppb.Now(),
+    }
+
+    conn, err := net.DialTimeout("tcp", c.addr, c.timeout)
+    if err != nil {
+        result.Status = pb.Status_STATUS_DOWN
+        result.Message = "connection failed"
+        result.Error = err.Error()
+        return result, nil
+    }
+    defer conn.Close()
+
+    result.Status = pb.Status_STATUS_UP
+    result.Message = "connection successful"
+    return result, nil
+}
 ```
 
-### SQLChecker
-
-Checks database connectivity:
+**Usage:**
 
 ```go
-db, _ := sql.Open("postgres", dsn)
-checker := srvmon.NewSQLChecker("postgres", db, "SELECT 1", 5*time.Second)
-monitor.RegisterCritical(checker)
+// Critical: service cannot function without Redis
+monitor.AddDependencies(NewPingChecker("redis", "localhost:6379", 5*time.Second, true))
+
+// Non-critical: service degrades gracefully without metrics
+monitor.AddDependencies(NewPingChecker("metrics", "localhost:9090", 2*time.Second, false))
 ```
 
-### RedisChecker
+### HTTP Health Checker
 
-Checks Redis connectivity (compatible with go-redis):
+Check HTTP endpoint health:
 
 ```go
-type redisClient struct {
+package checkers
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "time"
+
+    pb "github.com/s4bb4t/srvmon/pkg/grpc/srvmon/v1"
+    "google.golang.org/protobuf/types/known/timestamppb"
+)
+
+type HTTPChecker struct {
+    name     string
+    url      string
+    client   *http.Client
+    critical bool
+}
+
+func NewHTTPChecker(name, url string, timeout time.Duration, critical bool) *HTTPChecker {
+    return &HTTPChecker{
+        name:     name,
+        url:      url,
+        client:   &http.Client{Timeout: timeout},
+        critical: critical,
+    }
+}
+
+func (c *HTTPChecker) MustOK(_ context.Context) bool {
+    return c.critical
+}
+
+func (c *HTTPChecker) Check(ctx context.Context) (*pb.CheckResult, error) {
+    result := &pb.CheckResult{
+        Name:      c.name,
+        Timestamp: timestamppb.Now(),
+    }
+
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+    if err != nil {
+        result.Status = pb.Status_STATUS_DOWN
+        result.Error = err.Error()
+        return result, nil
+    }
+
+    resp, err := c.client.Do(req)
+    if err != nil {
+        result.Status = pb.Status_STATUS_DOWN
+        result.Message = "request failed"
+        result.Error = err.Error()
+        return result, nil
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+        result.Status = pb.Status_STATUS_UP
+        result.Message = fmt.Sprintf("status %d", resp.StatusCode)
+    } else {
+        result.Status = pb.Status_STATUS_DOWN
+        result.Message = fmt.Sprintf("unhealthy status %d", resp.StatusCode)
+    }
+
+    return result, nil
+}
+```
+
+**Usage:**
+
+```go
+// Check external API health
+monitor.AddDependencies(NewHTTPChecker(
+    "payment-api",
+    "https://payments.example.com/health",
+    10*time.Second,
+    true, // critical - can't process orders without payments
+))
+```
+
+### SQL Database Checker
+
+Check database connectivity:
+
+```go
+package checkers
+
+import (
+    "context"
+    "database/sql"
+    "time"
+
+    pb "github.com/s4bb4t/srvmon/pkg/grpc/srvmon/v1"
+    "google.golang.org/protobuf/types/known/timestamppb"
+)
+
+type SQLChecker struct {
+    name     string
+    db       *sql.DB
+    timeout  time.Duration
+    critical bool
+}
+
+func NewSQLChecker(name string, db *sql.DB, timeout time.Duration, critical bool) *SQLChecker {
+    return &SQLChecker{
+        name:     name,
+        db:       db,
+        timeout:  timeout,
+        critical: critical,
+    }
+}
+
+func (c *SQLChecker) MustOK(_ context.Context) bool {
+    return c.critical
+}
+
+func (c *SQLChecker) Check(ctx context.Context) (*pb.CheckResult, error) {
+    result := &pb.CheckResult{
+        Name:      c.name,
+        Timestamp: timestamppb.Now(),
+    }
+
+    ctx, cancel := context.WithTimeout(ctx, c.timeout)
+    defer cancel()
+
+    if err := c.db.PingContext(ctx); err != nil {
+        result.Status = pb.Status_STATUS_DOWN
+        result.Message = "database unreachable"
+        result.Error = err.Error()
+        return result, nil
+    }
+
+    result.Status = pb.Status_STATUS_UP
+    result.Message = "database healthy"
+    return result, nil
+}
+```
+
+**Usage:**
+
+```go
+db, _ := sql.Open("postgres", "postgres://user:pass@localhost/mydb?sslmode=disable")
+monitor.AddDependencies(NewSQLChecker("postgres", db, 5*time.Second, true))
+```
+
+### Redis Checker
+
+Check Redis connectivity (works with go-redis):
+
+```go
+package checkers
+
+import (
+    "context"
+    "time"
+
+    pb "github.com/s4bb4t/srvmon/pkg/grpc/srvmon/v1"
+    "google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// Pinger interface for Redis client compatibility
+type Pinger interface {
+    Ping(ctx context.Context) error
+}
+
+type RedisChecker struct {
+    name     string
+    client   Pinger
+    timeout  time.Duration
+    critical bool
+}
+
+func NewRedisChecker(name string, client Pinger, timeout time.Duration, critical bool) *RedisChecker {
+    return &RedisChecker{
+        name:     name,
+        client:   client,
+        timeout:  timeout,
+        critical: critical,
+    }
+}
+
+func (c *RedisChecker) MustOK(_ context.Context) bool {
+    return c.critical
+}
+
+func (c *RedisChecker) Check(ctx context.Context) (*pb.CheckResult, error) {
+    result := &pb.CheckResult{
+        Name:      c.name,
+        Timestamp: timestamppb.Now(),
+    }
+
+    ctx, cancel := context.WithTimeout(ctx, c.timeout)
+    defer cancel()
+
+    if err := c.client.Ping(ctx); err != nil {
+        result.Status = pb.Status_STATUS_DOWN
+        result.Message = "redis unreachable"
+        result.Error = err.Error()
+        return result, nil
+    }
+
+    result.Status = pb.Status_STATUS_UP
+    result.Message = "redis healthy"
+    return result, nil
+}
+```
+
+**Usage with go-redis:**
+
+```go
+import "github.com/redis/go-redis/v9"
+
+// Wrapper to match Pinger interface
+type redisWrapper struct {
     *redis.Client
 }
 
-func (c *redisClient) Ping(ctx context.Context) error {
-    return c.Client.Ping(ctx).Err()
+func (r *redisWrapper) Ping(ctx context.Context) error {
+    return r.Client.Ping(ctx).Err()
 }
 
-checker := srvmon.NewRedisChecker("redis", &redisClient{rdb}, 5*time.Second)
-monitor.Register(checker)
+// Usage
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+monitor.AddDependencies(NewRedisChecker("redis", &redisWrapper{rdb}, 5*time.Second, true))
 ```
 
-### CompositeChecker
-
-Aggregates multiple checkers with a strategy:
+## Configuration
 
 ```go
-// Require majority of Redis nodes to be healthy
-checker := srvmon.NewCompositeChecker(
-    "redis-cluster",
-    srvmon.StrategyMajority,
-    srvmon.NewPingChecker("redis-1", "redis-1:6379", 5*time.Second),
-    srvmon.NewPingChecker("redis-2", "redis-2:6379", 5*time.Second),
-    srvmon.NewPingChecker("redis-3", "redis-3:6379", 5*time.Second),
-)
-monitor.Register(checker)
-```
-
-### Custom Checker
-
-Implement the `Checker` interface:
-
-```go
-type Checker interface {
-    Name() string
-    Check(ctx context.Context) CheckResult
+type Config struct {
+    Version     string // Service version (returned in health responses)
+    GRPCAddress string // gRPC listen address (e.g., ":50051")
+    HTTPAddress string // HTTP listen address (e.g., ":8080")
 }
 ```
 
-Or use `CheckerFunc` for simple checks:
+### Server Configuration
 
-```go
-checker := srvmon.NewCheckerFunc("custom", func(ctx context.Context) srvmon.CheckResult {
-    start := time.Now()
-    // ... your check logic ...
-    return srvmon.CheckResult{
-        Name:      "custom",
-        Status:    srvmon.StatusUp,
-        Message:   "check passed",
-        Duration:  time.Since(start),
-        Timestamp: time.Now(),
+**gRPC Server:**
+| Setting | Value |
+|---------|-------|
+| Max concurrent streams | 10 |
+| Max message size | 4 MB |
+| Keepalive idle | 1 minute |
+| Keepalive interval | 5 seconds |
+| OpenTelemetry | Enabled |
+
+**HTTP Server:**
+| Setting | Value |
+|---------|-------|
+| Read timeout | 5 seconds |
+| Write timeout | 5 seconds |
+| Idle timeout | 10 seconds |
+
+## Response Examples
+
+### GET /health
+
+**Healthy service:**
+
+```json
+{
+  "status": "STATUS_UP",
+  "version": "1.0.0",
+  "checks": [
+    {
+      "name": "redis",
+      "status": "STATUS_UP",
+      "message": "connection successful",
+      "timestamp": "2024-01-15T10:30:00Z"
+    },
+    {
+      "name": "postgres",
+      "status": "STATUS_UP",
+      "message": "database healthy",
+      "timestamp": "2024-01-15T10:30:00Z"
     }
-})
-monitor.Register(checker)
+  ],
+  "timestamp": "2024-01-15T10:30:00Z"
+}
 ```
 
-## Configuration Options
+**Degraded service (non-critical failure):**
 
-```go
-monitor, _ := srvmon.New(
-    // Service identification
-    srvmon.WithServiceName("my-service"),
-    srvmon.WithVersion("1.0.0"),
-    srvmon.WithHostname("node-1"),
-
-    // Server addresses
-    srvmon.WithGRPCAddress(":50051"),
-    srvmon.WithHTTPAddress(":8080"),
-
-    // Check configuration
-    srvmon.WithCheckTimeout(10*time.Second),
-    srvmon.WithCheckInterval(30*time.Second),
-    srvmon.WithCacheTTL(5*time.Second),
-
-    // Parallel execution
-    srvmon.WithParallelChecks(true),
-    srvmon.WithMaxParallelChecks(10),
-
-    // Shutdown
-    srvmon.WithShutdownTimeout(30*time.Second),
-
-    // Observability
-    srvmon.WithLogger(logger),
-    srvmon.WithMetrics("/metrics"),
-    srvmon.WithPprof(),
-
-    // Callbacks
-    srvmon.WithOnHealthChange(func(old, new srvmon.Status) {
-        log.Printf("health changed: %s -> %s", old, new)
-    }),
-)
+```json
+{
+  "status": "STATUS_DEGRADED",
+  "version": "1.0.0",
+  "checks": [
+    {
+      "name": "redis",
+      "status": "STATUS_UP",
+      "message": "connection successful",
+      "timestamp": "2024-01-15T10:30:00Z"
+    },
+    {
+      "name": "metrics",
+      "status": "STATUS_DOWN",
+      "message": "connection failed",
+      "error": "dial tcp: connection refused",
+      "timestamp": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "timestamp": "2024-01-15T10:30:00Z"
+}
 ```
 
-## Checker Categories
+**Unhealthy service (critical failure):**
 
-Checkers can be registered with different categories:
+```json
+{
+  "status": "STATUS_DOWN",
+  "version": "1.0.0",
+  "checks": [
+    {
+      "name": "redis",
+      "status": "STATUS_DOWN",
+      "message": "connection failed",
+      "error": "dial tcp: connection refused",
+      "timestamp": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
 
-```go
-// Regular health check (aggregated into overall health)
-monitor.Register(checker)
+### GET /ready
 
-// Critical check (failure immediately marks service as DOWN)
-monitor.RegisterCritical(checker)
+**Service ready:**
 
-// Readiness check (determines if service accepts traffic)
-monitor.RegisterReadiness(checker)
+```json
+{
+  "ready": true,
+  "reason": "",
+  "checks": [
+    {
+      "name": "redis",
+      "status": "STATUS_UP",
+      "message": "connection successful",
+      "timestamp": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
 
-// Liveness check (determines if service should be restarted)
-monitor.RegisterLiveness(checker)
+**Service not ready (SetReady not called):**
 
-// Custom category
-monitor.RegisterWithCategory(checker, srvmon.CategoryHealth, true /* critical */)
+```json
+{
+  "ready": false,
+  "reason": "service is not ready",
+  "timestamp": "2024-01-15T10:30:00Z"
+}
+```
+
+**Service not ready (critical dependency down):**
+
+```json
+{
+  "ready": false,
+  "reason": "connection failed",
+  "checks": [
+    {
+      "name": "redis",
+      "status": "STATUS_DOWN",
+      "message": "connection failed",
+      "error": "dial tcp: connection refused",
+      "timestamp": "2024-01-15T10:30:00Z"
+    }
+  ],
+  "timestamp": "2024-01-15T10:30:00Z"
+}
 ```
 
 ## Kubernetes Integration
 
-### Deployment Example
+### Deployment Manifest
 
 ```yaml
 apiVersion: apps/v1
@@ -266,7 +594,14 @@ kind: Deployment
 metadata:
   name: my-service
 spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-service
   template:
+    metadata:
+      labels:
+        app: my-service
     spec:
       containers:
       - name: my-service
@@ -278,148 +613,106 @@ spec:
           name: grpc
         livenessProbe:
           httpGet:
-            path: /livez
+            path: /healthz
             port: http
-          initialDelaySeconds: 5
-          periodSeconds: 10
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /readyz
             port: http
           initialDelaySeconds: 5
           periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
         startupProbe:
           httpGet:
             path: /healthz
             port: http
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 3
           failureThreshold: 30
-          periodSeconds: 10
 ```
 
-### gRPC Health Checking
-
-The server implements the [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md):
+### gRPC Native Health Check (Kubernetes 1.24+)
 
 ```yaml
 livenessProbe:
   grpc:
     port: 50051
+  initialDelaySeconds: 10
+  periodSeconds: 15
+readinessProbe:
+  grpc:
+    port: 50051
   initialDelaySeconds: 5
-  periodSeconds: 10
+  periodSeconds: 5
 ```
 
-## Response Examples
+### Service
 
-### Health Response
-
-```json
-{
-  "status": "UP",
-  "version": "1.0.0",
-  "hostname": "web-server-1",
-  "uptime": "24h30m15s",
-  "checks": [
-    {
-      "name": "postgres",
-      "status": "UP",
-      "message": "database is healthy",
-      "details": {
-        "open_connections": 5,
-        "in_use": 2,
-        "idle": 3
-      },
-      "duration": "5.2ms",
-      "timestamp": "2024-01-15T10:30:00Z"
-    },
-    {
-      "name": "redis",
-      "status": "UP",
-      "message": "redis is healthy",
-      "duration": "1.1ms",
-      "timestamp": "2024-01-15T10:30:00Z"
-    }
-  ],
-  "timestamp": "2024-01-15T10:30:00Z"
-}
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+spec:
+  selector:
+    app: my-service
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+  - name: grpc
+    port: 50051
+    targetPort: grpc
 ```
 
-### Readiness Response
-
-```json
-{
-  "ready": true,
-  "checks": [],
-  "timestamp": "2024-01-15T10:30:00Z"
-}
-```
-
-### Liveness Response
-
-```json
-{
-  "alive": true,
-  "uptime": "24h30m15s",
-  "timestamp": "2024-01-15T10:30:00Z"
-}
-```
-
-## Development
-
-### Prerequisites
-
-- Go 1.21+
-- protoc (Protocol Buffers compiler)
-- protoc-gen-go & protoc-gen-go-grpc
-
-### Setup
+### Testing the Service
 
 ```bash
-# Install dependencies
-make deps
+# Start the example
+make run
 
-# Generate protobuf code
-make proto
+# In another terminal:
 
-# Build
-make build
+# Check health (HTTP)
+curl -s http://localhost:8080/health | jq
 
-# Run tests
-make test
+# Check readiness (HTTP)
+curl -s http://localhost:8080/ready | jq
 
-# Run linter
-make lint
+# Check health (gRPC with grpcurl)
+grpcurl -plaintext localhost:50051 srvmon.v1.srvmon/Health
+
+# Check readiness (gRPC)
+grpcurl -plaintext localhost:50051 srvmon.v1.srvmon/Ready
 ```
 
-### Project Structure
+## Project Structure
 
 ```
 srvmon/
-├── srvmon.go           # Main Monitor implementation
-├── checker.go          # Checker interface and built-in checkers
-├── status.go           # Health status types and reports
-├── options.go          # Functional options for configuration
-├── aggregator.go       # Health check aggregation logic
-├── server/
-│   ├── grpc.go         # gRPC server implementation
-│   └── http.go         # HTTP/REST server implementation
+├── srvmon.go              # Main SrvMon struct and server lifecycle
+├── checks.go              # Health() and Ready() RPC implementations
+├── go.mod                 # Go module definition
+├── go.sum                 # Dependency checksums
+├── Makefile               # Build automation
+├── LICENSE                # MIT license
+├── README.md              # This file
+├── CLAUDE.md              # AI assistant context
 ├── api/
-│   ├── proto/v1/       # Protobuf definitions
-│   └── swagger/        # OpenAPI specification
+│   ├── proto/v1/
+│   │   └── srvmon.proto   # gRPC service definition
+│   └── swagger/v1/
+│       └── srvmon.yaml    # OpenAPI 3.0 specification
 ├── pkg/
-│   └── grpc/           # Generated gRPC code
-├── example/            # Example implementation
-└── test/               # Test fixtures
+│   └── grpc/srvmon/v1/    # Generated gRPC code (do not edit)
+├── example/
+│   └── main.go            # Example implementation
+└── test/
+    └── ...                # Test files
 ```
-
-## Best Practices
-
-1. **Use Critical Checkers Wisely**: Only mark truly critical dependencies as critical
-2. **Set Appropriate Timeouts**: Health checks should be fast; use short timeouts
-3. **Cache Results**: Use caching to reduce load on dependencies during health checks
-4. **Separate Concerns**: Use different checker categories for different probe types
-5. **Graceful Degradation**: Return DEGRADED instead of DOWN when possible
-6. **Log State Changes**: Use the `OnHealthChange` callback to log status transitions
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
