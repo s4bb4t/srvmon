@@ -48,7 +48,10 @@ func (m *SrvMon) Health(ctx context.Context, _ *pb.HealthRequest) (*pb.HealthRes
 }
 
 func (m *SrvMon) Ready(ctx context.Context, _ *pb.ReadinessRequest) (resp *pb.ReadinessResponse, _ error) {
-	resp = &pb.ReadinessResponse{}
+	resp = &pb.ReadinessResponse{
+		Ready: false,
+	}
+
 	defer func() {
 		resp.Timestamp = timestamppb.New(time.Now())
 	}()
