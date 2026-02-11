@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -45,7 +46,8 @@ type (
 		httpAddr     string
 
 		readyOnce sync.Once
-		ready     chan struct{}
+		//ready     chan struct{}
+		ready atomic.Bool
 
 		log *zap.Logger
 		pb.UnimplementedSrvmonServer
@@ -64,7 +66,6 @@ func New(cfg Config, log *zap.Logger, dependencies ...Checker) *SrvMon {
 		grpcAddr: cfg.GRPCAddress,
 		httpAddr: cfg.HTTPAddress,
 		log:      log,
-		ready:    make(chan struct{}),
 	}
 
 	if dependencies != nil {
@@ -74,15 +75,13 @@ func New(cfg Config, log *zap.Logger, dependencies ...Checker) *SrvMon {
 	return m
 }
 
-func (s *SrvMon) AddDependencies(dependency ...Checker) *SrvMon {
-	s.dependencies = append(s.dependencies, dependency...)
-	return s
+func (m *SrvMon) AddDependencies(dependency ...Checker) *SrvMon {
+	m.dependencies = append(m.dependencies, dependency...)
+	return m
 }
 
-func (s *SrvMon) SetReady() {
-	s.readyOnce.Do(func() {
-		close(s.ready)
-	})
+func (m *SrvMon) SetReady() {
+	m.ready.CompareAndSwap(false, true)
 }
 
 func (m *SrvMon) Run(ctx context.Context) {
