@@ -48,15 +48,13 @@ func (m *SrvMon) Health(ctx context.Context, _ *pb.HealthRequest) (*pb.HealthRes
 }
 
 func (m *SrvMon) Ready(ctx context.Context, _ *pb.ReadinessRequest) (resp *pb.ReadinessResponse, _ error) {
-	resp = &pb.ReadinessResponse{
-		Ready:  false,
-		Reason: "service is not ready",
-	}
+	resp = &pb.ReadinessResponse{}
 	defer func() {
 		resp.Timestamp = timestamppb.New(time.Now())
 	}()
 
 	if !m.ready.Load() {
+		resp.Reason = "service is not ready"
 		return resp, nil
 	}
 
