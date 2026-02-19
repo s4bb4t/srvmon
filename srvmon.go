@@ -2,6 +2,7 @@ package srvmon
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -99,22 +100,19 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		resp, err := m.Health(r.Context(), &pb.HealthRequest{})
 		if err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			if _, err := w.Write([]byte(err.Error())); err != nil {
-				m.log.Error("write health response", zap.Error(err))
-			}
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
 		}
 
-		json, err := protojson.Marshal(resp)
+		data, err := protojson.Marshal(resp)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			if _, err := w.Write([]byte(err.Error())); err != nil {
-				m.log.Error("write health response", zap.Error(err))
-			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write(json); err != nil {
+		if _, err := w.Write(data); err != nil {
 			m.log.Error("write health response", zap.Error(err))
 		}
 	}
@@ -122,23 +120,20 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 	readyHandler := func(w http.ResponseWriter, r *http.Request) {
 		resp, err := m.Ready(r.Context(), &pb.ReadinessRequest{})
 		if err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			if _, err := w.Write([]byte(err.Error())); err != nil {
-				m.log.Error("write health response", zap.Error(err))
-			}
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
 		}
 
-		json, err := protojson.Marshal(resp)
+		data, err := protojson.Marshal(resp)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			if _, err := w.Write([]byte(err.Error())); err != nil {
-				m.log.Error("write health response", zap.Error(err))
-			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write(json); err != nil {
-			m.log.Error("write health response", zap.Error(err))
+		if _, err := w.Write(data); err != nil {
+			m.log.Error("write ready response", zap.Error(err))
 		}
 	}
 
@@ -166,11 +161,10 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 	)
 
 	go func() {
-
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			m.log.Error("serve rest", zap.Error(err))
+		}
 	}()
-	if err := srv.ListenAndServe(); err != nil {
-		m.log.Error("serve", zap.Error(err))
-	}
 
 	return srv.Shutdown
 }

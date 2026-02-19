@@ -98,8 +98,40 @@ func fetch(url string, timeout time.Duration) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// render builds the full frame into a buffer and returns it as a string.
-// Writing the whole frame at once avoids flicker on repaint.
+func renderChecks(b *strings.Builder, checks []checkResult) {
+	if len(checks) == 0 {
+		return
+	}
+
+	nameW := 0
+	for _, c := range checks {
+		if len(c.Name) > nameW {
+			nameW = len(c.Name)
+		}
+	}
+
+	for i, c := range checks {
+		icon, label := statusIcon(c.Status)
+		connector := "├"
+		if i == len(checks)-1 {
+			connector = "└"
+		}
+		_, _ = fmt.Fprintf(b, "  %s%s──%s %s%-*s%s  %s %s", dim, connector, reset, bold, nameW, c.Name, reset, icon, label)
+		if c.Message != "" {
+			_, _ = fmt.Fprintf(b, "  %s%s%s", dim, c.Message, reset)
+		}
+		b.WriteString("\n")
+		if c.Error != "" {
+			padding := "│"
+			if i == len(checks)-1 {
+				padding = " "
+			}
+			_, _ = fmt.Fprintf(b, "  %s%s%s     %s%s%s\n", dim, padding, reset, red, c.Error, reset)
+		}
+	}
+}
+
+// render builds the full frame: first checks readiness, then health if ready.
 func render(addr string, timeout time.Duration) string {
 	var b strings.Builder
 
@@ -108,9 +140,8 @@ func render(addr string, timeout time.Duration) string {
 	b.WriteString(bold + cyan + "  srvmon" + reset + dim + " — service health monitor" + reset + "\n")
 	b.WriteString(dim + "  " + strings.Repeat("─", 48) + reset + "\n")
 
-	// health
-	url := fmt.Sprintf("http://%s/health", addr)
-	body, err := fetch(url, timeout)
+	// 1. Check readiness first
+	rBody, err := fetch(fmt.Sprintf("http://%s/ready", addr), timeout)
 	if err != nil {
 		b.WriteString(fmt.Sprintf("\n  %s  %s\n", red+"●"+reset, "Cannot reach "+bold+addr+reset))
 		b.WriteString(fmt.Sprintf("     %s%s%s\n\n", dim, err.Error(), reset))
@@ -118,8 +149,39 @@ func render(addr string, timeout time.Duration) string {
 		return b.String()
 	}
 
+	var r readinessResponse
+	if err := json.Unmarshal(rBody, &r); err != nil {
+		b.WriteString(fmt.Sprintf("\n  %sparse error: %s%s\n", red, err.Error(), reset))
+		return b.String()
+	}
+
+	b.WriteString(fmt.Sprintf("\n  %s  Readiness: %s", bold+"READY"+reset, readyBadge(r.Ready)))
+	if !r.Ready && r.Reason != "" {
+		b.WriteString(fmt.Sprintf("  %s%s%s", dim, r.Reason, reset))
+	}
+	b.WriteString("\n")
+
+	// 2. If not ready — show readiness checks (if any) and stop
+	if !r.Ready {
+		if len(r.Checks) > 0 {
+			b.WriteString("\n")
+			renderChecks(&b, r.Checks)
+		}
+		b.WriteString(fmt.Sprintf("\n  %s%s%s\n", dim, time.Now().Format("15:04:05"), reset))
+		return b.String()
+	}
+
+	// 3. Service is ready — fetch full health
+	hBody, err := fetch(fmt.Sprintf("http://%s/health", addr), timeout)
+	if err != nil {
+		b.WriteString(fmt.Sprintf("\n  %s  Health: %s\n", bold+"HEALTH"+reset, bgRed+bold+" ERROR "+reset))
+		b.WriteString(fmt.Sprintf("     %s%s%s\n", dim, err.Error(), reset))
+		b.WriteString(fmt.Sprintf("\n  %s%s%s\n", dim, time.Now().Format("15:04:05"), reset))
+		return b.String()
+	}
+
 	var h healthResponse
-	if err := json.Unmarshal(body, &h); err != nil {
+	if err := json.Unmarshal(hBody, &h); err != nil {
 		b.WriteString(fmt.Sprintf("\n  %sparse error: %s%s\n", red, err.Error(), reset))
 		return b.String()
 	}
@@ -130,48 +192,7 @@ func render(addr string, timeout time.Duration) string {
 	}
 	b.WriteString("\n\n")
 
-	if len(h.Checks) > 0 {
-		nameW := 0
-		for _, c := range h.Checks {
-			if len(c.Name) > nameW {
-				nameW = len(c.Name)
-			}
-		}
-
-		for i, c := range h.Checks {
-			icon, label := statusIcon(c.Status)
-			connector := "├"
-			if i == len(h.Checks)-1 {
-				connector = "└"
-			}
-			b.WriteString(fmt.Sprintf("  %s%s──%s %s%-*s%s  %s %s", dim, connector, reset, bold, nameW, c.Name, reset, icon, label))
-			if c.Message != "" {
-				b.WriteString(fmt.Sprintf("  %s%s%s", dim, c.Message, reset))
-			}
-			b.WriteString("\n")
-			if c.Error != "" {
-				padding := "│"
-				if i == len(h.Checks)-1 {
-					padding = " "
-				}
-				b.WriteString(fmt.Sprintf("  %s%s%s     %s%s%s\n", dim, padding, reset, red, c.Error, reset))
-			}
-		}
-	}
-
-	// readiness
-	rURL := fmt.Sprintf("http://%s/ready", addr)
-	rBody, err := fetch(rURL, timeout)
-	if err == nil {
-		var r readinessResponse
-		if err := json.Unmarshal(rBody, &r); err == nil {
-			b.WriteString(fmt.Sprintf("\n  %s  Readiness: %s", bold+"READY"+reset, readyBadge(r.Ready)))
-			if !r.Ready && r.Reason != "" {
-				b.WriteString(fmt.Sprintf("  %s%s%s", dim, r.Reason, reset))
-			}
-			b.WriteString("\n")
-		}
-	}
+	renderChecks(&b, h.Checks)
 
 	// footer
 	b.WriteString(fmt.Sprintf("\n  %s%s%s\n", dim, time.Now().Format("15:04:05"), reset))
@@ -195,14 +216,12 @@ func main() {
 			frame := render(addr, timeout)
 			if !watch {
 				fmt.Print(frame)
-				// exit 1 if service is unreachable
-				if _, err := fetch(fmt.Sprintf("http://%s/health", addr), timeout); err != nil {
+				if _, err := fetch(fmt.Sprintf("http://%s/ready", addr), timeout); err != nil {
 					os.Exit(1)
 				}
 				return nil
 			}
 
-			// watch mode: hide cursor, clear screen, repaint in-place
 			fmt.Print(hideCursor + clearScreen)
 			defer fmt.Print(showCursor)
 
@@ -213,7 +232,6 @@ func main() {
 
 			for range ticker.C {
 				frame = render(addr, timeout)
-				// move cursor home and overwrite — no flicker, no scroll
 				fmt.Print(moveHome + clearScreen + frame)
 			}
 
@@ -276,34 +294,7 @@ func renderHealth(h healthResponse) string {
 		b.WriteString(fmt.Sprintf("  %s%s%s", dim, h.Version, reset))
 	}
 	b.WriteString("\n\n")
-
-	if len(h.Checks) > 0 {
-		nameW := 0
-		for _, c := range h.Checks {
-			if len(c.Name) > nameW {
-				nameW = len(c.Name)
-			}
-		}
-		for i, c := range h.Checks {
-			icon, label := statusIcon(c.Status)
-			connector := "├"
-			if i == len(h.Checks)-1 {
-				connector = "└"
-			}
-			b.WriteString(fmt.Sprintf("  %s%s──%s %s%-*s%s  %s %s", dim, connector, reset, bold, nameW, c.Name, reset, icon, label))
-			if c.Message != "" {
-				b.WriteString(fmt.Sprintf("  %s%s%s", dim, c.Message, reset))
-			}
-			b.WriteString("\n")
-			if c.Error != "" {
-				padding := "│"
-				if i == len(h.Checks)-1 {
-					padding = " "
-				}
-				b.WriteString(fmt.Sprintf("  %s%s%s     %s%s%s\n", dim, padding, reset, red, c.Error, reset))
-			}
-		}
-	}
+	renderChecks(&b, h.Checks)
 	b.WriteString("\n")
 	return b.String()
 }
@@ -314,6 +305,11 @@ func renderReady(r readinessResponse) string {
 	if !r.Ready && r.Reason != "" {
 		b.WriteString(fmt.Sprintf("  %s%s%s", dim, r.Reason, reset))
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	if len(r.Checks) > 0 {
+		b.WriteString("\n")
+		renderChecks(&b, r.Checks)
+	}
+	b.WriteString("\n")
 	return b.String()
 }
