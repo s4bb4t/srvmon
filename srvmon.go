@@ -151,17 +151,19 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 		IdleTimeout:       10 * time.Second,
 	}
 
-	host := m.httpAddr
-	if len(host) > 0 && host[0] == ':' {
-		host = "localhost" + host
+	lis, err := net.Listen("tcp", m.httpAddr)
+	if err != nil {
+		m.log.Panic("listen rest:", zap.Error(err))
 	}
+
+	host := lis.Addr().String()
 	m.log.Info("starting srvmon rest",
 		zap.String("health", "http://"+host+"/health"),
 		zap.String("ready", "http://"+host+"/ready"),
 	)
 
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(lis); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			m.log.Error("serve rest", zap.Error(err))
 		}
 	}()
