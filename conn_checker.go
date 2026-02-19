@@ -6,7 +6,10 @@ import (
 
 	pb "github.com/s4bb4t/srvmon/pkg/grpc/srvmon/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -49,14 +52,18 @@ func (c *ConnChecker) Check(ctx context.Context) (*pb.CheckResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	// Force the connection out of IDLE so it actually tries to connect.
 	c.conn.Connect()
 
 	client := grpc_health_v1.NewHealthClient(c.conn)
 	hr, err := client.Check(ctx, &grpc_health_v1.HealthCheckRequest{
 		Service: c.service,
 	})
+
 	if err != nil {
+		// If the server doesn't implement grpc.health.v1, fall back to connection state check.
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unimplemented {
+			return c.checkConnState(resp), nil
+		}
 		resp.Status = pb.Status_STATUS_DOWN
 		resp.Message = "health check failed"
 		resp.Error = err.Error()
@@ -79,6 +86,24 @@ func (c *ConnChecker) Check(ctx context.Context) (*pb.CheckResult, error) {
 	}
 
 	return resp, nil
+}
+
+// checkConnState falls back to checking the raw gRPC connection state
+// when the server does not implement grpc.health.v1.
+func (c *ConnChecker) checkConnState(resp *pb.CheckResult) *pb.CheckResult {
+	state := c.conn.GetState()
+	switch state {
+	case connectivity.Ready:
+		resp.Status = pb.Status_STATUS_UP
+		resp.Message = state.String()
+	case connectivity.Idle:
+		resp.Status = pb.Status_STATUS_DEGRADED
+		resp.Message = state.String() + " (health RPC not implemented)"
+	default:
+		resp.Status = pb.Status_STATUS_DOWN
+		resp.Message = state.String()
+	}
+	return resp
 }
 
 func (c *ConnChecker) MustOK(_ context.Context) bool {
