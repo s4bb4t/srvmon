@@ -156,7 +156,14 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 		IdleTimeout:       10 * time.Second,
 	}
 
-	m.log.Info("starting srvmon rest", zap.String("address", m.httpAddr))
+	host := m.httpAddr
+	if len(host) > 0 && host[0] == ':' {
+		host = "localhost" + host
+	}
+	m.log.Info("starting srvmon rest",
+		zap.String("health", "http://"+host+"/health"),
+		zap.String("ready", "http://"+host+"/ready"),
+	)
 
 	go func() {
 
@@ -191,7 +198,7 @@ func (m *SrvMon) startGRPC() func() {
 		m.log.Panic("listen:", zap.Error(err))
 	}
 
-	m.log.Info("starting srvmon grpc", zap.String("address", m.grpcAddr))
+	m.log.Info("starting srvmon grpc", zap.String("address", lis.Addr().String()))
 
 	go func() {
 		if err := s.Serve(lis); err != nil {

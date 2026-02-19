@@ -28,7 +28,9 @@ func TestReady(t *testing.T) {
 			}
 
 			m := make(map[string]any)
-			json.NewDecoder(resp.Body).Decode(&m)
+			if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+				t.Fatal(err)
+			}
 
 			fmt.Println(m)
 		case <-ctx.Done():
