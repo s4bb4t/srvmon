@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -38,7 +40,6 @@ type (
 	}
 
 	SrvMon struct {
-		ctx          context.Context
 		dependencies []Checker
 		version      string
 		grpcAddr     string
@@ -99,34 +100,46 @@ func (m *SrvMon) startREST() func(ctx context.Context) error {
 		resp, err := m.Health(r.Context(), &pb.HealthRequest{})
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(err.Error()))
+			if _, err := w.Write([]byte(err.Error())); err != nil {
+				m.log.Error("write health response", zap.Error(err))
+			}
 		}
 
 		json, err := protojson.Marshal(resp)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
+			if _, err := w.Write([]byte(err.Error())); err != nil {
+				m.log.Error("write health response", zap.Error(err))
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write(json)
+		if _, err := w.Write(json); err != nil {
+			m.log.Error("write health response", zap.Error(err))
+		}
 	}
 
 	readyHandler := func(w http.ResponseWriter, r *http.Request) {
 		resp, err := m.Ready(r.Context(), &pb.ReadinessRequest{})
 		if err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(err.Error()))
+			if _, err := w.Write([]byte(err.Error())); err != nil {
+				m.log.Error("write health response", zap.Error(err))
+			}
 		}
 
 		json, err := protojson.Marshal(resp)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
+			if _, err := w.Write([]byte(err.Error())); err != nil {
+				m.log.Error("write health response", zap.Error(err))
+			}
 		}
 
 		w.WriteHeader(http.StatusOK)
-		w.Write(json)
+		if _, err := w.Write(json); err != nil {
+			m.log.Error("write health response", zap.Error(err))
+		}
 	}
 
 	router.HandleFunc("/health", healthHandler)
@@ -169,6 +182,10 @@ func (m *SrvMon) startGRPC() func() {
 
 	pb.RegisterSrvmonServer(s, m)
 
+	healthSrv := health.NewServer()
+	grpc_health_v1.RegisterHealthServer(s, healthSrv)
+	healthSrv.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+
 	lis, err := net.Listen("tcp", m.grpcAddr)
 	if err != nil {
 		m.log.Panic("listen:", zap.Error(err))
@@ -182,5 +199,8 @@ func (m *SrvMon) startGRPC() func() {
 		}
 	}()
 
-	return s.Stop
+	return func() {
+		healthSrv.Shutdown()
+		s.Stop()
+	}
 }
