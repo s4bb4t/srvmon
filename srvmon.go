@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,8 +44,6 @@ type (
 		grpcAddr     string
 		httpAddr     string
 
-		readyOnce sync.Once
-		//ready     chan struct{}
 		ready atomic.Bool
 
 		log *zap.Logger

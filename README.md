@@ -18,8 +18,16 @@ Production-grade service health monitoring package for Go with gRPC and REST sup
 
 ## Installation
 
+**Library:**
+
 ```bash
 go get github.com/s4bb4t/srvmon
+```
+
+**CLI client:**
+
+```bash
+go install github.com/s4bb4t/srvmon/cmd/srvmon-cli@latest
 ```
 
 ## Quick Start
@@ -584,6 +592,49 @@ type Config struct {
 }
 ```
 
+## CLI Client
+
+`srvmon-cli` is a terminal tool for checking service health with colored, in-place status output.
+
+```
+  srvmon — service health monitor
+  ────────────────────────────────────────────────
+
+  HEALTH  Health:  UP   v1.0.0
+
+  ├── redis            ● UP    connection successful
+  ├── postgres         ● UP    database healthy
+  └── external-api     ● DOWN  connection failed
+        dial tcp: connection refused
+
+  READY  Readiness:  READY
+```
+
+**Usage:**
+
+```bash
+# Check default address (localhost:8080)
+srvmon-cli
+
+# Custom address
+srvmon-cli -a localhost:9090
+
+# Live monitoring (updates in-place, no scroll spam)
+srvmon-cli --watch
+srvmon-cli -w -i 1s -a localhost:8085
+
+# Health or readiness only
+srvmon-cli health -a localhost:8085
+srvmon-cli ready -a localhost:8085
+```
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--addr` | `-a` | `localhost:8080` | srvmon HTTP address |
+| `--timeout` | `-t` | `3s` | Request timeout |
+| `--watch` | `-w` | `false` | Continuously poll and update in-place |
+| `--interval` | `-i` | `2s` | Poll interval (with `--watch`) |
+
 ## Kubernetes Integration
 
 ### Deployment Manifest
@@ -711,6 +762,8 @@ srvmon/
 │       └── srvmon.yaml    # OpenAPI 3.0 specification
 ├── pkg/
 │   └── grpc/srvmon/v1/    # Generated gRPC code (do not edit)
+├── cmd/
+│   └── srvmon-cli/        # CLI client for health checking
 ├── example/
 │   └── main.go            # Example implementation
 └── test/

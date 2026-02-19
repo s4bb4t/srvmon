@@ -2,7 +2,7 @@ BINARY_NAME := srvmon
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 SERVICE_NAME := srvmon
 
-.PHONY: all build run test lint clean docker proto swagger generate deps help
+.PHONY: all build build-cli run test lint clean docker proto swagger generate deps help
 
 # Default target
 all: generate build test lint
@@ -10,6 +10,13 @@ all: generate build test lint
 # Build the binary
 build:
 	go build -ldflags="-s -w -X main.version=$(VERSION)" -o bin/$(BINARY_NAME) ./example
+
+# Build the CLI client
+build-cli:
+	go build -ldflags="-s -w" -o bin/$(BINARY_NAME)-cli ./cmd/srvmon-cli
+
+install:
+	go install $(LDFLAGS) ./cmd/srvmon-cli
 
 # Run the example
 run: build
@@ -35,8 +42,8 @@ lint:
 # Clean build artifacts
 clean:
 	rm -rf bin/
-	rm -rf pkg/grpc/
 	rm -f coverage.out coverage.html
+	rm -f ./srvmon-cli
 
 # Build Docker image
 docker:
